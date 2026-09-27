@@ -9,7 +9,7 @@ if (!token) {
 }
 
 const webhookUrl = process.env.WEBHOOK_URL?.replace(/\/$/, '');
-const webhookPort = Number(process.env.WEBHOOK_PORT || 8443);
+const webhookPort = Number(process.env.PORT || process.env.WEBHOOK_PORT || 8443);
 if (!webhookUrl) {
 	console.error('Не задана переменная окружения WEBHOOK_URL.');
 	process.exit(1);
@@ -20,7 +20,9 @@ if (!Number.isInteger(webhookPort) || webhookPort < 1 || webhookPort > 65535) {
 }
 
 const BOT_NAME = 'fakecasinojs';
-const DATA_FILE = path.join(__dirname, 'players.json');
+const dataDirectory = process.env.DATA_DIR || __dirname;
+fs.mkdirSync(dataDirectory, { recursive: true });
+const DATA_FILE = path.join(dataDirectory, 'players.json');
 const START_BALANCE = 1000;
 const DAILY_BONUS = 500;
 const DAILY_COOLDOWN = 24 * 60 * 60 * 1000;

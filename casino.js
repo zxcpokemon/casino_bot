@@ -8,17 +8,6 @@ if (!token) {
 	process.exit(1);
 }
 
-const webhookUrl = process.env.WEBHOOK_URL?.replace(/\/$/, '');
-const webhookPort = Number(process.env.PORT || process.env.WEBHOOK_PORT || 8443);
-if (!webhookUrl) {
-	console.error('Не задана переменная окружения WEBHOOK_URL.');
-	process.exit(1);
-}
-if (!Number.isInteger(webhookPort) || webhookPort < 1 || webhookPort > 65535) {
-	console.error('WEBHOOK_PORT должен быть целым числом от 1 до 65535.');
-	process.exit(1);
-}
-
 const BOT_NAME = 'fakecasinojs';
 const dataDirectory = process.env.DATA_DIR || __dirname;
 fs.mkdirSync(dataDirectory, { recursive: true });
@@ -93,12 +82,7 @@ function parseBet(text, balance) {
 	return { bet };
 }
 
-const bot = new TelegramBot(token, {
-	webHook: {
-		port: webhookPort,
-		autoOpen: false,
-	},
-});
+const bot = new TelegramBot(token, { polling: { autoStart: false } });
 
 const pendingGames = new Map();
 
@@ -160,24 +144,30 @@ function playSlots(message, betText) {
 		return;
 	}
 
-	const result = Array.from({ length: 3 }, () => SLOTS[Math.floor(Math.random() * SLOTS.length)]);
-	const pair = result[0] === result[1] || result[1] === result[2] || result[0] === result[2];
-	const multiplier = result.every((symbol) => symbol === result[0]) ? 5 : pair ? 2 : 0;
-	const payout = multiplier === 5
-		? betResult.bet * 5
-		: multiplier === 2
-			? Math.floor(betResult.bet * 5 / 3)
-			: 0;
-	player.balance += payout - betResult.bet;
-	savePlayers();
+	bot.sendDice(message.chat.id, { emoji: '🎰' })
+		.then(() => {
+			const result = Array.from({ length: 3 }, () => SLOTS[Math.floor(Math.random() * SLOTS.length)]);
+			const pair = result[0] === result[1] || result[1] === result[2] || result[0] === result[2];
+			const multiplier = result.every((symbol) => symbol === result[0]) ? 5 : pair ? 2 : 0;
+			const payout = multiplier === 5
+				? betResult.bet * 5
+				: multiplier === 2
+					? Math.floor(betResult.bet * 5 / 3)
+					: 0;
+			player.balance += payout - betResult.bet;
+			savePlayers();
 
-	const outcome = multiplier === 5
-		? `Три совпадения! Выигрыш: ${formatBalance(payout)}.`
-		: multiplier === 2
-			? `Есть пара! Выигрыш: ${formatBalance(payout)}.`
-			: `Не повезло. Ставка ${formatBalance(betResult.bet)} проиграла.`;
-	bot.sendMessage(message.chat.id,
-		`${result.join(' | ')}\n${outcome}\nБаланс: ${formatBalance(player.balance)}.`);
+			const outcome = multiplier === 5
+				? `Три совпадения! Выигрыш: ${formatBalance(payout)}.`
+				: multiplier === 2
+					? `Есть пара! Выигрыш: ${formatBalance(payout)}.`
+					: `Не повезло. Ставка ${formatBalance(betResult.bet)} проиграла.`;
+			return bot.sendMessage(message.chat.id,
+				`${outcome}\nБаланс: ${formatBalance(player.balance)}.`);
+		})
+		.catch((error) => {
+			console.error('Ошибка игры в слоты:', error.message);
+		});
 }
 
 function playBasket(message, betText) {
@@ -326,16 +316,16 @@ bot.onText(/\/basket(?:@\w+)?(?:\s+([^\s]+))?/, (message, match) => {
 	playBasket(message, match[1]);
 });
 
-bot.on('webhook_error', (error) => {
-	console.error('Ошибка Telegram webhook:', error.message);
+bot.on('polling_error', (error) => {
+	console.error('Ошибка Telegram polling:', error.message);
 });
 
-bot.openWebHook()
-	.then(() => bot.setWebHook(`${webhookUrl}/bot${token}`))
+bot.deleteWebHook()
+	.then(() => bot.startPolling())
 	.then(() => {
-		console.log(`Webhook запущен на порту ${webhookPort}. Используются только виртуальные фишки.`);
+		console.log('Бот запущен на компьютере через polling. Используются только виртуальные фишки.');
 	})
 	.catch((error) => {
-		console.error('Не удалось запустить Telegram webhook:', error.message);
+		console.error('Не удалось запустить бота:', error.message);
 		process.exitCode = 1;
 	});

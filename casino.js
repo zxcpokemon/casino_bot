@@ -16,15 +16,44 @@ const START_BALANCE = 1000;
 const DAILY_BONUS = 500;
 const DAILY_COOLDOWN = 24 * 60 * 60 * 1000;
 const MAX_BET = 100000;
-const SLOTS = ['🍒', '🍋', '🔔', '💎', '7️⃣'];
+const SLOT_SYMBOLS = ['BAR', '🍇', '🍋', '7️⃣'];
+const SLOT_TRIPLE_PAYOUTS = new Map([
+	[0, { name: 'BAR', multiplier: 20 }],
+	[1, { name: '🍇', multiplier: 30 }],
+	[2, { name: '🍋', multiplier: 50 }],
+	[3, { name: '777', multiplier: 100 }],
+]);
 const GAME_KEYBOARD = {
 	keyboard: [
 		[{ text: '🎰 Слоты' }, { text: '🏀 Баскетбол' }],
 		[{ text: '🪙 Монетка' }],
 	],
 	resize_keyboard: true,
+	one_time_keyboard: false,
 	is_persistent: true,
 	input_field_placeholder: 'Выбери игру',
+};
+const BET_KEYBOARD = {
+	keyboard: [
+		[{ text: '50' }, { text: '100' }, { text: '200' }],
+		[{ text: '500' }, { text: '1000' }],
+		[{ text: '✏️ Своя ставка' }],
+		[{ text: '⬅️ Игры' }],
+	],
+	resize_keyboard: true,
+	one_time_keyboard: false,
+	is_persistent: true,
+	input_field_placeholder: 'Выбери или введи ставку',
+};
+const FLIP_KEYBOARD = {
+	keyboard: [
+		[{ text: 'Орёл' }, { text: 'Решка' }],
+		[{ text: '⬅️ Игры' }],
+	],
+	resize_keyboard: true,
+	one_time_keyboard: false,
+	is_persistent: true,
+	input_field_placeholder: 'Выбери сторону',
 };
 const GAME_BUTTONS = new Map([
 	['🎰 Слоты', 'slots'],
@@ -82,6 +111,20 @@ function parseBet(text, balance) {
 	return { bet };
 }
 
+function getSlotTriple(value) {
+	if (!Number.isInteger(value) || value < 1 || value > 64) {
+		throw new Error(`Некорректное значение результата слотов: ${value}`);
+	}
+
+	const roll = value - 1;
+	const reels = [0, 1, 2].map((reel) => Math.floor(roll / (4 ** reel)) % 4);
+	if (!reels.every((symbol) => symbol === reels[0])) {
+		return null;
+	}
+
+	return { ...SLOT_TRIPLE_PAYOUTS.get(reels[0]), symbol: SLOT_SYMBOLS[reels[0]] };
+}
+
 const bot = new TelegramBot(token, { polling: { autoStart: false } });
 
 const pendingGames = new Map();
@@ -93,13 +136,13 @@ function getPendingGameKey(message) {
 function askForBet(message, game) {
 	pendingGames.set(getPendingGameKey(message), { game, stage: 'bet' });
 	bot.sendMessage(message.chat.id,
-		`Какую ставку поставить? Введи число от 1 до ${MAX_BET.toLocaleString('ru-RU')}.`,
-		{ reply_markup: { force_reply: true } });
+		`Выбери ставку или нажми «Своя ставка» и введи число от 1 до ${MAX_BET.toLocaleString('ru-RU')}.`,
+		{ reply_markup: BET_KEYBOARD });
 }
 
 function askForFlipSide(message) {
 	bot.sendMessage(message.chat.id, 'На какую сторону ставишь: орёл или решка?',
-		{ reply_markup: { force_reply: true } });
+		{ reply_markup: FLIP_KEYBOARD });
 }
 
 function playFlip(message, betText, choiceText) {
@@ -123,7 +166,8 @@ function playFlip(message, betText, choiceText) {
 	const choice = choiceText.toLowerCase();
 	const choices = { 'орёл': 'орёл', 'орел': 'орёл', 'решка': 'решка' };
 	if (!choices[choice]) {
-		bot.sendMessage(message.chat.id, 'Выбери сторону: орёл или решка. Пример: /flip 100 решка');
+		bot.sendMessage(message.chat.id, 'Выбери сторону: орёл или решка. Пример: /flip 100 решка',
+			{ reply_markup: FLIP_KEYBOARD });
 		return;
 	}
 
@@ -133,7 +177,8 @@ function playFlip(message, betText, choiceText) {
 	savePlayers();
 	bot.sendMessage(message.chat.id,
 		`Выпало: ${result}. ${won ? `Ты выиграл ${formatBalance(betResult.bet)}!` : `Ставка ${formatBalance(betResult.bet)} проиграла.`}\n` +
-		`Баланс: ${formatBalance(player.balance)}.`);
+		`Баланс: ${formatBalance(player.balance)}.`,
+		{ reply_markup: GAME_KEYBOARD });
 }
 
 function playSlots(message, betText) {
@@ -145,25 +190,18 @@ function playSlots(message, betText) {
 	}
 
 	bot.sendDice(message.chat.id, { emoji: '🎰' })
-		.then(() => {
-			const result = Array.from({ length: 3 }, () => SLOTS[Math.floor(Math.random() * SLOTS.length)]);
-			const pair = result[0] === result[1] || result[1] === result[2] || result[0] === result[2];
-			const multiplier = result.every((symbol) => symbol === result[0]) ? 5 : pair ? 2 : 0;
-			const payout = multiplier === 5
-				? betResult.bet * 5
-				: multiplier === 2
-					? Math.floor(betResult.bet * 5 / 3)
-					: 0;
+		.then((sentMessage) => {
+			const triple = getSlotTriple(sentMessage.dice.value);
+			const payout = triple ? betResult.bet * triple.multiplier : 0;
 			player.balance += payout - betResult.bet;
 			savePlayers();
 
-			const outcome = multiplier === 5
-				? `Три совпадения! Выигрыш: ${formatBalance(payout)}.`
-				: multiplier === 2
-					? `Есть пара! Выигрыш: ${formatBalance(payout)}.`
-					: `Не повезло. Ставка ${formatBalance(betResult.bet)} проиграла.`;
+			const outcome = triple
+				? `Три ${triple.name}! Выплата ×${triple.multiplier}: ${formatBalance(payout)}.`
+				: `Тройки нет. Ставка ${formatBalance(betResult.bet)} проиграла.`;
 			return bot.sendMessage(message.chat.id,
-				`${outcome}\nБаланс: ${formatBalance(player.balance)}.`);
+				`${outcome}\nБаланс: ${formatBalance(player.balance)}.`,
+				{ reply_markup: GAME_KEYBOARD });
 		})
 		.catch((error) => {
 			console.error('Ошибка игры в слоты:', error.message);
@@ -188,7 +226,8 @@ function playBasket(message, betText) {
 				? `Попадание! Выигрыш: ${formatBalance(payout)}.`
 				: `Промах. Ставка ${formatBalance(betResult.bet)} проиграла.`;
 			return bot.sendMessage(message.chat.id,
-				`${outcome}\nБаланс: ${formatBalance(player.balance)}.`);
+				`${outcome}\nБаланс: ${formatBalance(player.balance)}.`,
+				{ reply_markup: GAME_KEYBOARD });
 		})
 		.catch((error) => {
 			console.error('Ошибка баскетбольной игры:', error.message);
@@ -206,22 +245,36 @@ bot.on('message', (message) => {
 		return;
 	}
 
+	const key = getPendingGameKey(message);
+	const pending = pendingGames.get(key);
+	if (message.text === '⬅️ Игры') {
+		pendingGames.delete(key);
+		bot.sendMessage(message.chat.id, 'Выбери игру:', { reply_markup: GAME_KEYBOARD });
+		return;
+	}
+
 	if (message.text.startsWith('/')) {
 		return;
 	}
 
-	const key = getPendingGameKey(message);
-	const pending = pendingGames.get(key);
 	if (!pending) {
 		return;
 	}
 
-	if (pending.stage === 'bet') {
+	if (pending.stage === 'bet' && message.text === '✏️ Своя ставка') {
+		pending.stage = 'customBet';
+		bot.sendMessage(message.chat.id,
+			`Введи ставку числом от 1 до ${MAX_BET.toLocaleString('ru-RU')}.`,
+			{ reply_markup: BET_KEYBOARD });
+		return;
+	}
+
+	if (pending.stage === 'bet' || pending.stage === 'customBet') {
 		const betResult = parseBet(message.text.trim(), getPlayer(message.from).balance);
 		if (betResult.error) {
 			bot.sendMessage(message.chat.id,
-				`${betResult.error} Введи ставку ещё раз числом.`,
-				{ reply_markup: { force_reply: true } });
+				`${betResult.error} Выбери ставку или введи другое число.`,
+				{ reply_markup: BET_KEYBOARD });
 			return;
 		}
 
@@ -240,7 +293,7 @@ bot.on('message', (message) => {
 		const choice = message.text.trim().toLowerCase();
 		if (!['орёл', 'орел', 'решка'].includes(choice)) {
 			bot.sendMessage(message.chat.id, 'Напиши «орёл» или «решка».',
-				{ reply_markup: { force_reply: true } });
+				{ reply_markup: FLIP_KEYBOARD });
 			return;
 		}
 
@@ -266,12 +319,14 @@ bot.onText(/\/help(?:@\w+)?/, (message) => {
 		'/flip <ставка> <орёл|решка> — сыграть в монетку\n' +
 		'/slots <ставка> — крутить слоты\n' +
 		'/basket <ставка> — бросить баскетбольный мяч\n\n' +
-		`Ставка: от 1 до ${MAX_BET.toLocaleString('ru-RU')} фишек.`);
+		`Ставка: от 1 до ${MAX_BET.toLocaleString('ru-RU')} фишек.`,
+		{ reply_markup: GAME_KEYBOARD });
 });
 
 bot.onText(/\/balance(?:@\w+)?/, (message) => {
 	const player = getPlayer(message.from);
-	bot.sendMessage(message.chat.id, `Твой баланс: ${formatBalance(player.balance)}.`);
+	bot.sendMessage(message.chat.id, `Твой баланс: ${formatBalance(player.balance)}.`,
+		{ reply_markup: GAME_KEYBOARD });
 });
 
 bot.onText(/\/daily(?:@\w+)?/, (message) => {
@@ -281,7 +336,8 @@ bot.onText(/\/daily(?:@\w+)?/, (message) => {
 	if (remaining > 0) {
 		const hours = Math.floor(remaining / (60 * 60 * 1000));
 		const minutes = Math.ceil((remaining % (60 * 60 * 1000)) / (60 * 1000));
-		bot.sendMessage(message.chat.id, `Бонус уже получен. Попробуй через ${hours} ч. ${minutes} мин.`);
+		bot.sendMessage(message.chat.id, `Бонус уже получен. Попробуй через ${hours} ч. ${minutes} мин.`,
+			{ reply_markup: GAME_KEYBOARD });
 		return;
 	}
 
@@ -289,7 +345,8 @@ bot.onText(/\/daily(?:@\w+)?/, (message) => {
 	player.lastDaily = now;
 	savePlayers();
 	bot.sendMessage(message.chat.id,
-		`Начислено ${formatBalance(DAILY_BONUS)}. Баланс: ${formatBalance(player.balance)}.`);
+		`Начислено ${formatBalance(DAILY_BONUS)}. Баланс: ${formatBalance(player.balance)}.`,
+		{ reply_markup: GAME_KEYBOARD });
 });
 
 bot.onText(/\/flip(?:@\w+)?(?:\s+([^\s]+))?(?:\s+([^\s]+))?/, (message, match) => {

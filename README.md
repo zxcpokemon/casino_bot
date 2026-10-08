@@ -221,8 +221,4 @@ TELEGRAM_TOKEN=your_token_here
 ## Notes
 - Do not commit `.env`, secrets, or user data
 - Keep `node_modules` out of GitHub
-
-## License
-MIT
-```
-
+  
